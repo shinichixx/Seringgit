@@ -36,7 +36,7 @@ struct LogScreenshotIntent: AppIntent {
     static var description = IntentDescription("Reads the amount, payee, reference and time from a screenshot of a successful MAE, DuitNow QR or FPX payment and records it in Seringgit.")
     static var openAppWhenRun: Bool = false
 
-    @Parameter(title: "Screenshot", supportedContentTypes: [.image])
+    @Parameter(title: "Screenshot", supportedTypeIdentifiers: ["public.image"])
     var screenshot: IntentFile
 
     static var parameterSummary: some ParameterSummary {
