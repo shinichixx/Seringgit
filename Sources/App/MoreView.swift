@@ -39,7 +39,7 @@ struct MoreView: View {
                             if let url = BackupService.backup(ctx: ctx) { message = "Saved \(url.lastPathComponent) to Files → On My iPhone → Seringgit → Backups." }
                             else { message = "Backup failed." }
                         } label: { Label("Back up now", systemImage: "externaldrive.badge.checkmark") }
-                        Button { restoring = true } label: { Label("Restore from backup", systemImage: "arrow.counterclockwise") }
+                        Button { restoring = true } label: { Label("Import CSV / restore backup", systemImage: "square.and.arrow.down") }
                         if let csvURL {
                             ShareLink(item: csvURL) { Label("Share CSV", systemImage: "square.and.arrow.up") }
                         } else {
@@ -49,8 +49,8 @@ struct MoreView: View {
                         Text("Data")
                     } footer: {
                         Text(lastBackup > 0
-                             ? "\(txns.count) payments. Last backup \(Fmt.dateTime.string(from: Date(timeIntervalSince1970: lastBackup))). Backups run automatically when you leave the app (every 6 hours at most)."
-                             : "\(txns.count) payments. Backups run automatically when you leave the app.")
+                             ? "\(txns.count) payments. Last backup \(Fmt.dateTime.string(from: Date(timeIntervalSince1970: lastBackup))). Backups run automatically when you leave the app (every 6 hours at most). Import takes a CSV from Seringgit, Belanje or most expense apps, or a Seringgit backup (.json); payments already in the app are skipped."
+                             : "\(txns.count) payments. Backups run automatically when you leave the app. Import takes a CSV from Seringgit, Belanje or most expense apps, or a Seringgit backup (.json).")
                     }
 
                     Section {
@@ -61,17 +61,12 @@ struct MoreView: View {
             }
             .background(Theme.background)
             .toolbar(.hidden, for: .navigationBar)
-            .fileImporter(isPresented: $restoring, allowedContentTypes: [.json]) { result in
+            .fileImporter(isPresented: $restoring, allowedContentTypes: [.commaSeparatedText, .tabSeparatedText, .json, .plainText, .text, .spreadsheet, .data]) { result in
                 switch result {
                 case .success(let url):
-                    do {
-                        let n = try BackupService.restore(from: url, ctx: ctx)
-                        message = "Restored \(n) payment\(n == 1 ? "" : "s")."
-                    } catch {
-                        message = "That file isn't a Seringgit backup."
-                    }
-                case .failure:
-                    break
+                    message = BackupService.importFile(url, ctx: ctx)
+                case .failure(let error):
+                    message = "Couldn't open the file: \(error.localizedDescription)"
                 }
             }
             .alert("Seringgit", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {

@@ -95,15 +95,82 @@ enum BackupService {
         for f in files.dropFirst(keep) { try? FileManager.default.removeItem(at: f) }
     }
 
-    /// Adds anything in the backup that isn't already in the app (matched by payment id). Returns payments added.
-    static func restore(from url: URL, ctx: ModelContext) throws -> Int {
+    /// Import a Seringgit backup (.json) or a CSV from Seringgit, Belanje or another app. Returns a message to show.
+    static func importFile(_ url: URL, ctx: ModelContext) -> String {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: url)
+        let data: Data
+        do { data = try Data(contentsOf: url) } catch {
+            return "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+        if data.starts(with: [0x50, 0x4B]) {
+            return "\(url.lastPathComponent) is an Excel/zip file. Open it in Numbers → Share → Export → CSV, then import the CSV."
+        }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        let file = try dec.decode(BackupFile.self, from: data)
+        if let file = try? dec.decode(BackupFile.self, from: data) {
+            do {
+                let n = try restore(file, ctx: ctx)
+                return "Restored \(n) payment\(n == 1 ? "" : "s") from \(url.lastPathComponent)."
+            } catch {
+                return "Restore failed: \(error.localizedDescription)"
+            }
+        }
+        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) ?? String(data: data, encoding: .windowsCP1252) else {
+            return "\(url.lastPathComponent) isn't a text file Seringgit can read."
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+            var why = ""
+            do { _ = try dec.decode(BackupFile.self, from: data) } catch { why = "\n\n\(String(describing: error).prefix(300))" }
+            return "\(url.lastPathComponent) is JSON but not a Seringgit backup.\(why)"
+        }
+        return importCSV(text, name: url.lastPathComponent, ctx: ctx)
+    }
 
+    static func importCSV(_ text: String, name: String, ctx: ModelContext) -> String {
+        let result = CSVImporter.importRows(text)
+        if let err = result.error { return "\(name): \(err)" }
+
+        var cats = (try? ctx.fetch(FetchDescriptor<SpendCategory>(sortBy: [SortDescriptor(\.sortOrder)]))) ?? []
+        let palette = CategoryForm.colors
+        func categoryName(for r: ImportedRow, method: PayMethod) -> String {
+            let wanted = r.category.trimmingCharacters(in: .whitespaces)
+            if wanted.isEmpty { return Store.categoryFor(merchant: r.payee, method: method, ctx: ctx) }
+            if let c = cats.first(where: { $0.name.lowercased() == wanted.lowercased() }) { return c.name }
+            let c = SpendCategory(name: wanted, icon: "tag.fill", colorHex: palette[cats.count % palette.count],
+                                  sortOrder: (cats.map { $0.sortOrder }.max() ?? 0) + 1)
+            ctx.insert(c)
+            cats.append(c)
+            return c.name
+        }
+
+        let existing = (try? ctx.fetch(FetchDescriptor<Txn>())) ?? []
+        func dupKey(_ d: Date, _ a: Double, _ p: String) -> String {
+            "\(Int(d.timeIntervalSince1970 / 60))|\(Int((a * 100).rounded()))|\(Categorizer.normalize(p))"
+        }
+        var seen = Set(existing.map { dupKey($0.date, $0.amount, $0.merchant) })
+        var added = 0, dups = 0
+        for r in result.rows {
+            let k = dupKey(r.date, r.amount, r.payee)
+            if seen.contains(k) { dups += 1; continue }
+            seen.insert(k)
+            let m = r.method ?? .other
+            let t = Txn(date: r.date, amount: r.amount, merchant: r.payee, category: categoryName(for: r, method: m), method: m, source: .imported)
+            t.note = r.note
+            ctx.insert(t)
+            added += 1
+        }
+        try? ctx.save()
+        var parts: [String] = []
+        if result.skippedIncome > 0 { parts.append("\(result.skippedIncome) income") }
+        if dups > 0 { parts.append("\(dups) already in Seringgit") }
+        if result.skippedBad > 0 { parts.append("\(result.skippedBad) unreadable") }
+        return "Imported \(added) payment\(added == 1 ? "" : "s") from \(name)." + (parts.isEmpty ? "" : " Skipped: " + parts.joined(separator: ", ") + ".")
+    }
+
+    /// Adds anything in the backup that isn't already in the app (matched by payment id). Returns payments added.
+    static func restore(_ file: BackupFile, ctx: ModelContext) throws -> Int {
         let existingCats = Set(((try? ctx.fetch(FetchDescriptor<SpendCategory>())) ?? []).map { $0.name })
         for c in file.categories where !existingCats.contains(c.name) {
             ctx.insert(SpendCategory(name: c.name, icon: c.icon, colorHex: c.colorHex, sortOrder: c.sortOrder, monthlyBudget: c.monthlyBudget))

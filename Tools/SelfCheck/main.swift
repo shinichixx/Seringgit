@@ -103,5 +103,26 @@ var learned = rules
 learned.append(CategoryRule(keyword: "MYDIN MALL KUANTAN", category: "Family", exact: true))
 check("Learned merchant wins", Categorizer.category(for: "Mydin Mall Kuantan", rules: learned) == "Family")
 
+// CSV import: Seringgit's own export
+let own = CSVImporter.importRows("Date,Amount (RM),Payee,Category,Paid with,Note,Reference,Recorded by\n2026-11-11 19:15,25.90,\"MYDIN, KUANTAN\",Groceries,DuitNow QR,\"\",123,Auto · Screenshot\n", calendar: cal)
+check("CSV own: 1 row", own.rows.count == 1 && own.error == nil)
+check("CSV own: quoted comma payee", own.rows.first?.payee == "MYDIN, KUANTAN")
+check("CSV own: amount + method + category", near(own.rows.first?.amount, 25.90) && own.rows.first?.method == .duitnowQR && own.rows.first?.category == "Groceries")
+check("CSV own: date", own.rows.first?.date == cal.date(from: DateComponents(year: 2026, month: 11, day: 11, hour: 19, minute: 15)))
+
+// Belanje-style: Type column, income row, dd/MM/yyyy, CRLF line ends, BOM
+let bel = CSVImporter.importRows("\u{FEFF}Date,Time,Type,Category,Amount,Note\r\n10/11/2026,08:30,Expense,Food,RM 8.50,Nasi lemak\r\n10/11/2026,09:00,Income,Salary,5000.00,Gaji\r\n11/11/2026,12:00,Expense,Petrol,-60.00,Petronas\r\n", calendar: cal)
+check("CSV Belanje: 2 expenses, 1 income skipped", bel.rows.count == 2 && bel.skippedIncome == 1)
+check("CSV Belanje: date+time joined", bel.rows.first?.date == cal.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 8, minute: 30)))
+check("CSV Belanje: note used as payee", bel.rows.first?.payee == "Nasi lemak" && bel.rows.first?.category == "Food")
+check("CSV Belanje: negative amount made positive", near(bel.rows.last?.amount, 60))
+
+// Semicolon file, signed amounts with no type column (positives = income)
+let semi = CSVImporter.importRows("Tarikh;Keterangan;Jumlah\n11 Nov 2026;ZUS Coffee;-12.90\n11 Nov 2026;Refund;5.00\n", calendar: cal)
+check("CSV semicolon: 1 expense, 1 income", semi.rows.count == 1 && semi.skippedIncome == 1 && semi.rows.first?.payee == "ZUS Coffee")
+
+let junk = CSVImporter.importRows("hello,world\n1,2\n", calendar: cal)
+check("CSV without date/amount gives a clear error", junk.error != nil && junk.rows.isEmpty)
+
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)
